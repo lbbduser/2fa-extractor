@@ -1,1 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2FA Bulk Generator</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #121212;
+      color: #fff;
+    }
 
+    h1 {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+
+    textarea {
+      width: 100%;
+      height: 100px;
+      padding: 10px;
+      font-size: 14px;
+      background: #1e1e1e;
+      border: none;
+      color: #fff;
+      border-radius: 6px;
+      margin-bottom: 10px;
+    }
+
+    .buttons {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+
+    button {
+      background: #00b894;
+      color: #fff;
+      padding: 10px 18px;
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:hover {
+      background: #019875;
+    }
+
+    .clear-btn {
+      background: #d63031;
+    }
+
+    .totp-container {
+      display: flex;
+      flex-direction: column;
+      gap: 15px;
+    }
+
+    .totp-entry {
+      background: #1f1f1f;
+      padding: 12px 15px;
+      border-radius: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 18px;
+    }
+
+    .code {
+      font-weight: bold;
+      font-size: 24px;
+      color: #00e676;
+      letter-spacing: 2px;
+    }
+
+    .copy-btn {
+      background: #0984e3;
+      padding: 6px 12px;
+      border-radius: 4px;
+      border: none;
+      color: #fff;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #00b894;
+      padding: 12px 20px;
+      border-radius: 6px;
+      color: white;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s;
+      z-index: 999;
+    }
+
+    .toast.show {
+      opacity: 1;
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Ultra-Fast 2FA Generator</h1>
+
+  <textarea id="secretInput" placeholder="Enter 2FA keys (Base32), one per line..."></textarea>
+
+  <div class="buttons">
+    <button class="clear-btn" onclick="clearInput()">Clear</button>
+  </div>
+
+  <div class="totp-container" id="totpList"></div>
+
+  <div class="toast" id="toast">Copied!</div>
+
+  <script>
+    // Convert Base32 to Hex
+    function base32ToHex(base32) {
+      const base32chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+      let bits = "", hex = "";
+      base32 = base32.replace(/=+$/, "").toUpperCase();
+      for (let i = 0; i < base32.length; i++) {
+        const val = base32chars.indexOf(base32.charAt(i));
+        if (val < 0) continue;
+        bits += val.toString(2).padStart(5, "0");
+      }
+      for (let i = 0; i + 4 <= bits.length; i += 4) {
+        hex += parseInt(bits.substr(i, 4), 2).toString(16);
+      }
+      return hex;
+    }
+
+    function hexToBytes(hex) {
+      const bytes = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < hex.length; i += 2) {
+        bytes[i / 2] = parseInt(hex.substr(i, 2), 16);
+      }
+      return bytes;
+    }
+
+    async function generateTOTP(secret) {
+      const epoch = Math.floor(Date.now() / 1000);
+      const time = Math.floor(epoch / 30).toString(16).padStart(16, "0");
+      const key = base32ToHex(secret);
+      const keyBytes = hexToBytes(key);
+      const timeBytes = hexToBytes(time);
+
+      try {
+        const cryptoKey = await crypto.subtle.importKey(
+          "raw", keyBytes,
+          { name: "HMAC", hash: "SHA-1" },
+          false, ["sign"]
+        );
+        const signature = await crypto.subtle.sign("HMAC", cryptoKey, timeBytes);
+        const hash = new Uint8Array(signature);
+        const offset = hash[hash.length - 1] & 0xf;
+        const binary = ((hash[offset] & 0x7f) << 24)
+                     | ((hash[offset + 1] & 0xff) << 16)
+                     | ((hash[offset + 2] & 0xff) << 8)
+                     | (hash[offset + 3] & 0xff);
+        return (binary % 1000000).toString().padStart(6, "0");
+      } catch (e) {
+        return "Error";
+      }
+    }
+
+    function showToast(message = "Copied!") {
+      const toast = document.getElementById("toast");
+      toast.textContent = message;
+      toast.classList.add("show");
+      setTimeout(() => toast.classList.remove("show"), 1500);
+    }
+
+    function copyToClipboard(code) {
+      const tempInput = document.createElement("input");
+      tempInput.style.position = "absolute";
+      tempInput.style.left = "-1000px";
+      tempInput.value = code;
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      try {
+        document.execCommand("copy");
+        showToast("Copied: " + code);
+      } catch (err) {
+        showToast("Failed to copy");
+      }
+      document.body.removeChild(tempInput);
+    }
+
+    async function updateCodes() {
+      const secrets = document.getElementById("secretInput").value
+        .trim()
+        .split("\n")
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+
+      const container = document.getElementById("totpList");
+      container.innerHTML = "";
+
+      for (let secret of secrets) {
+        const code = await generateTOTP(secret);
+        const entry = document.createElement("div");
+        entry.className = "totp-entry";
+        entry.innerHTML = `
+          <div class="code">${code}</div>
+          <button class="copy-btn" onclick="copyToClipboard('${code}')">Copy</button>
+        `;
+        container.appendChild(entry);
+      }
+    }
+
+    function clearInput() {
+      document.getElementById("secretInput").value = "";
+      updateCodes();
+    }
+
+    // Auto update when input changes
+    document.getElementById("secretInput").addEventListener("input", updateCodes);
+
+    // Auto refresh codes every second
+    setInterval(updateCodes, 1000);
+  </script>
+</body>
+</html>
